@@ -1,0 +1,160 @@
+{ lib }:
+let
+  inherit (lib)
+    concatStringsSep
+    filter
+    mapAttrsToList
+    removePrefix
+    removeSuffix
+    replicate
+    ;
+
+  indent = level: concatStringsSep "" (replicate level "  ");
+
+  isEmpty =
+    value:
+    value == null
+    || (builtins.isAttrs value && value == { })
+    || (builtins.isList value && value == [ ]);
+
+  trimRaw = value: removePrefix "\n" (removeSuffix "\n" (removeSuffix ";" value.__raw));
+
+  readSource =
+    value: removeSuffix "\n" (if builtins.isPath value then builtins.readFile value else value);
+
+  indentLines =
+    text:
+    let
+      lines = lib.splitString "\n" (removePrefix "\n" text);
+    in
+    concatStringsSep "\n" (map (line: if line == "" then "" else "  " + line) lines);
+
+  toTypeScript =
+    let
+      go =
+        level: value:
+        if builtins.isAttrs value && value ? __raw then
+          trimRaw value
+        else if builtins.isAttrs value then
+          let
+            entries = mapAttrsToList (name: entry: "${indent (level + 1)}${name}: ${go (level + 1) entry}") (
+              lib.filterAttrs (_: entry: !isEmpty entry) value
+            );
+          in
+          if entries == [ ] then "{}" else "{\n" + concatStringsSep ",\n" entries + "\n" + indent level + "}"
+        else if builtins.isList value then
+          let
+            items = map (entry: "${indent (level + 1)}${go (level + 1) entry}") (
+              filter (entry: !isEmpty entry) value
+            );
+          in
+          if items == [ ] then "[]" else "[\n" + concatStringsSep ",\n" items + "\n" + indent level + "]"
+        else
+          builtins.toJSON value;
+    in
+    value: go 0 value;
+
+  renderStatements =
+    value: render:
+    if isEmpty value then "" else concatStringsSep "\n" (filter (line: line != "") (render value));
+
+  renderAssignment =
+    name: value: lib.optionalString (value != null) "${name} = ${toTypeScript value};";
+
+  renderCall = name: args: "${name}(${concatStringsSep ", " args});";
+in
+{
+  inherit toTypeScript;
+
+  renderConfig =
+    {
+      cfg,
+      dtsPath,
+    }:
+    let
+      sections = filter (section: section != "") [
+        (renderAssignment "glide.g.mapleader" cfg.settings.mapleader)
+        (lib.optionalString (
+          cfg.settings.label_generators != null
+        ) "glide.hints.label_generators = ${removeSuffix "\n" cfg.settings.label_generators};")
+        (renderStatements cfg.settings.preferences (
+          prefs:
+          mapAttrsToList (
+            name: value:
+            renderCall "glide.prefs.set" [
+              (toTypeScript name)
+              (toTypeScript value)
+            ]
+          ) prefs
+        ))
+        (renderStatements cfg.settings.options (
+          options: mapAttrsToList (name: value: renderAssignment "glide.o.${name}" value) options
+        ))
+        (renderStatements cfg.settings.search_engines (
+          engines: map (engine: renderCall "glide.search_engines.add" [ (toTypeScript engine) ]) engines
+        ))
+        (renderStatements cfg.settings.excmds (
+          commands:
+          map (
+            command:
+            renderCall "glide.excmds.create" [
+              (toTypeScript command.info)
+              (toTypeScript { __raw = command.fn; })
+            ]
+          ) commands
+        ))
+        (renderStatements cfg.settings.keymaps (
+          keymaps:
+          map (
+            keymap:
+            lib.optionalString keymap.enable (
+              let
+                renderedOptions = lib.optionalString (keymap.options != null) ", ${toTypeScript keymap.options}";
+              in
+              "glide.keymaps.set(${toTypeScript keymap.modes}, ${toTypeScript keymap.key}, ${toTypeScript keymap.action}${renderedOptions});"
+            )
+          ) keymaps
+        ))
+        (renderStatements cfg.settings.autocmds (
+          autocmds:
+          map (
+            autocmd:
+            renderCall "glide.autocmds.create" [
+              (toTypeScript autocmd.event)
+              (toTypeScript autocmd.pattern)
+              (toTypeScript { __raw = autocmd.callback; })
+            ]
+          ) autocmds
+        ))
+        (renderStatements cfg.addons (
+          addons:
+          map (
+            addon:
+            let
+              renderedOptions = lib.optionalString (addon.options != null) ", ${toTypeScript addon.options}";
+            in
+            "glide.addons.install(${toTypeScript addon.url}${renderedOptions});"
+          ) addons
+        ))
+        (renderStatements cfg.extraConfig (
+          extraConfig:
+          let
+            entries = if builtins.isList extraConfig then extraConfig else [ extraConfig ];
+          in
+          map readSource entries
+        ))
+        (renderStatements cfg.styles (
+          styles:
+          map (
+            style: renderCall "glide.styles.add" [ (toTypeScript ("\n" + indentLines (readSource style))) ]
+          ) styles
+        ))
+      ];
+    in
+    ''
+      /// <reference path="${dtsPath}" />
+      // Generated by Home Manager.
+
+      ${concatStringsSep "\n\n" sections}
+    '';
+}
