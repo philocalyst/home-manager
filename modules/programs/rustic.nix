@@ -53,10 +53,10 @@ let
       "no-cache" = if repo.noCache then true else null;
       "cache-dir" = repo.cacheDir;
       "repo-hot" = repo.repoHot;
-      password = repo.password;
+      inherit (repo) password;
       "password-command" = repo.passwordCommand;
     }
-    // lib.optionalAttrs (repo.options != { }) { options = repo.options; }
+    // lib.optionalAttrs (repo.options != { }) { inherit (repo) options; }
     // repo.extraSettings;
 
   mkProfileConfig =
@@ -160,7 +160,7 @@ let
       };
 
       extraSettings = lib.mkOption {
-        type = tomlFormat.type;
+        inherit (tomlFormat) type;
         default = { };
         description = ''
           Additional keys merged verbatim into the `[repository]` TOML table,
@@ -191,7 +191,7 @@ in
             };
 
             settings = lib.mkOption {
-              type = tomlFormat.type;
+              inherit (tomlFormat) type;
               default = { };
               example = lib.literalExpression ''
                 {
